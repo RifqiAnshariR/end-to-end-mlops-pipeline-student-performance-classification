@@ -1,0 +1,132 @@
+services:
+  # database for mlflow
+  mlflow-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${MLFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${MLFLOW_DB_PASSWORD}
+      POSTGRES_DB: mlflowdb
+    # ports:
+    #   - "5432:5432"
+    expose:
+      - 5432
+    volumes:
+      - mlflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${MLFLOW_DB_USER} -d mlflowdb" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # database for userdata
+  userdata-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${USERDATA_DB_USER}
+      POSTGRES_PASSWORD: ${USERDATA_DB_PASSWORD}
+      POSTGRES_DB: ${USERDATA_DB_NAME}
+    ports:
+      - "5433:5432"
+    volumes:
+      - userdata-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${USERDATA_DB_USER} -d ${USERDATA_DB_NAME}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # storage for mlflow
+  mlflow-storage:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
+    # ports:
+    #   - "9000:9000"
+    #   - "9001:9001"
+    expose:
+      - 9000
+    healthcheck:
+      test: timeout 5s bash -c ':> /dev/tcp/127.0.0.1/9000' || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - mlflow-storage-data:/data
+
+  mlflow-storage-create-bucket:
+    image: minio/mc
+    depends_on:
+      mlflow-storage:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+      mc alias set minio http://mlflow-storage:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY} && 
+      mc mb --ignore-existing minio/mlflow-bucket
+      "
+
+  # MLflow server: 
+  # https://mlflow.org/docs/latest/ml/tracking/tutorials/remote-server/
+  # https://ruhyadi.github.io/blog/mlflow-docker/
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    image: mlflow-custom:latest
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://mlflow-storage:9000
+      MLFLOW_S3_IGNORE_TLS: "true"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # MLFLOW_DEFAULT_ARTIFACT_ROOT: s3://mlflow-bucket
+    ports:
+      - "5000:5000"
+    depends_on:
+      mlflow-db:
+        condition: service_healthy
+      mlflow-storage:
+        condition: service_healthy
+      mlflow-storage-create-bucket:
+        condition: service_completed_successfully
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${MLFLOW_DB_USER}:${MLFLOW_DB_PASSWORD}@mlflow-db:5432/mlflowdb
+      --artifacts-destination s3://mlflow-bucket
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts "*"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000" ]
+      interval: 10s
+      timeout: 5s
+      retries: 2
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    command: >
+      sh -c "
+      uv run alembic upgrade head && 
+      uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      USERDATA_DB_USER: ${USERDATA_DB_USER}
+      USERDATA_DB_PASSWORD: ${USERDATA_DB_PASSWORD}
+      USERDATA_DB_NAME: ${USERDATA_DB_NAME}
+      USERDATA_DB_HOST: userdata-db
+      USERDATA_DB_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      userdata-db:
+        condition: service_healthy
+
+volumes:
+  mlflow-db-data:
+  userdata-db-data:
+  mlflow-storage-data:

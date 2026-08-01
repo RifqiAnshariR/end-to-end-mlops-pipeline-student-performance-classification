@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+
+.env
+.env.*
+
+.vscode/
+
+# .pytest_cache/
+# .coverage
+# htmlcov/
+
+.ruff_cache/
+.mypy_cache/
+
+dist/
+build/
+wheels/
+*.egg-info/
+
+site/
+
+data/*/*
+!data/*/.gitkeep
+
+models/*/*
+!models/*/.gitkeep
+
+reports/*/*
+!reports/*/.gitkeep
+
+.ipynb_checkpoints/
+notebooks/
